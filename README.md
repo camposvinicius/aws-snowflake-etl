@@ -132,7 +132,7 @@ The results:
 
 <br />
 
-After the crawler is run, here is our final table with the data already enriched in our glue spark job 1 application that you can check how it was done.
+After the **crawler** runs, here is our final table with the data schema already enriched, since all the fields in our original schema were _strings_, which you can check how it was done in our glue spark job 1.
 
 <br />
 
