@@ -175,4 +175,120 @@ And finally we have the destruction of resources via our CICD pipeline that we m
 ![cloudformationdestruction](screenshots/delete-cloudformation.png)
 
 You can understand the code to construct [here](https://github.com/camposvinicius/datachallenge_public_repo/blob/main/.github/workflows/deploy.yml) and 
-to destroy [here](https://github.com/camposvinicius/datachallenge_public_repo/blob/main/.github/workflows/destroy.yml)
+to destroy [here](https://github.com/camposvinicius/datachallenge_public_repo/blob/main/.github/workflows/destroy.yml).
+
+## -------------------------------------------------- EXTRA BONUS --------------------------------------------------
+
+Let's imagine that you need to make the data available not only in **Athena** but also in **![Snowflake](https://miro.medium.com/max/1088/1*L02Ojuxa39jZefsd2LkbXw.png)**
+
+Well, there are many ways to do this, let's show you one of them. First we can create a _snowflake integration_ with our dalalake using this structure:
+
+```sql
+create or replace storage integration datadelivery
+type = external_stage
+storage_provider = s3
+enabled = true
+storage_aws_role_arn = 'arn:aws:iam::YOUR_ACCOUNT_ID:role/RoleToAccessS3DataDeliveryZone'
+storage_allowed_locations = (
+    's3://data-deliveryzone/data/'
+);
+```
+
+<br />
+
+![sf-integration](screenshots/integration_snowflake.png)
+
+<br />
+
+_Remembering that you need to create a Role that will have a policy that gives you the access to your s3 bucket that you want._
+
+You can follow this [step by step](https://docs.snowflake.com/en/user-guide/data-load-s3-config-aws-iam-role) to understand how to configure the integration and role.
+
+After that you will create a STAGE using the created integration, which is basically where the files will be inside the snowflake.
+
+<br />
+
+```sql
+create or replace stage DELIVERYZONE.DELIVERYZONE.STAGE_DELIVERYZONE
+url='s3://data-deliveryzone/data/'
+storage_integration = datadelivery;
+```
+
+<br />
+
+![sf-stage](screenshots/stage.png)
+
+<br />
+
+You will also need to create the file format that snowflake will work in and ingest with your file, in our case is parquet.
+
+```sql
+CREATE OR REPLACE FILE FORMAT DELIVERYZONE.DELIVERYZONE.PARQUET
+TYPE = PARQUET
+SNAPPY_COMPRESSION = TRUE
+BINARY_AS_TEXT = TRUE
+TRIM_SPACE = FALSE
+NULL_IF = ('NULL', 'NUL', '');
+```
+
+<br />
+
+![sf-fileformat](screenshots/fileformat.png)
+
+<br />
+
+Now basically you can make the table available directly integrated to your datalake, via external table. First map the schema of your table and you can follow the idea below, in this case, we have a partitioned table and to help you map your partition you can do a query like this to understand your partitioned table and metadata:
+
+<br />
+
+```sql
+select 
+    metadata$filename, 
+    (split_part(split_part(metadata$filename, '/', 2),'=', 2)::TEXT)
+FROM @DELIVERYZONE.DELIVERYZONE.STAGE_DELIVERYZONE (file_format => 'DELIVERYZONE.DELIVERYZONE.PARQUET') t;
+```
+
+<br />
+
+![sf-metadatafilename](screenshots/metadata_filename.png)
+
+<br />
+
+```sql
+create or replace external table DELIVERYZONE.DELIVERYZONE.TABLE_DELIVERYZONE (
+  REGION string AS (value:REGION::string), 
+  ITEM_TYPE string AS (value:ITEM_TYPE::string), 
+  SALES_CHANNEL string AS (value:SALES_CHANNEL::string), 
+  ORDER_PRIORITY string AS (value:ORDER_PRIORITY::string), 
+  ORDER_DATE date AS (value:ORDER_DATE::date), 
+  ORDER_ID int AS (value:ORDER_ID::int), 
+  SHIP_DATE date AS (value:SHIP_DATE::date), 
+  UNITS_SOLD int AS (value:UNITS_SOLD::int), 
+  UNIT_PRICE decimal AS (value:UNIT_PRICE::decimal(10,2)), 
+  UNIT_COST decimal AS (value:UNIT_COST::decimal(10,2)), 
+  TOTAL_REVENUE decimal AS (value:TOTAL_REVENUE::decimal(10,2)), 
+  TOTAL_COST decimal AS (value:TOTAL_COST::decimal(10,2)), 
+  TOTAL_PROFIT decimal AS (value:TOTAL_PROFIT::decimal(10,2)), 
+  COUNTRY STRING AS (split_part(split_part(metadata$filename, '/', 2),'=', 2)::TEXT)
+    ) 
+  partition by (COUNTRY)
+  location = @DELIVERYZONE.DELIVERYZONE.STAGE_DELIVERYZONE
+  auto_refresh = true 
+  file_format = (FORMAT_NAME='DELIVERYZONE.DELIVERYZONE.PARQUET'); 
+```
+
+<br />
+
+And here is our external table created.
+
+<br />
+
+![sf-external_table_creation](screenshots/external_table_creation.png)
+
+<br />
+
+<br />
+
+![sf-external_table_preview](screenshots/external_table_preview.png)
+
+<br />
