@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Data Engineer Requirements
+
+Resources:
+
+  ## BUCKETS 
+  
+  CodesZone:
+    Type: AWS::S3::Bucket    
+    Properties:
+      BucketName: data-codeszone    
+      Tags:
+        - Key: DataBucket
+          Value: CodesZone
+
+  ## ECR REPOSITORY
+
+  ECRLambdaExtractImage: 
+    Type: AWS::ECR::Repository
+    Properties: 
+      RepositoryName: "lambda-extract-image"
+      ImageScanningConfiguration: 
+        ScanOnPush: true
+
+Outputs:
+
+  ## BUCKETS OUTPUT
+
+  CodesZoneBucketName:
+    Description: The CodesZone Bucket Name
+    Value: !Ref CodesZone
+
+  ## ECR REPOSITORY OUTPUT    
+
+  ECRLambdaExtractImageArn:
+    Value: !GetAtt ECRLambdaExtractImage.Arn
