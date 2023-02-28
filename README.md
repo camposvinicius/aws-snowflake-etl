@@ -12,6 +12,12 @@ First, the pipeline itself is a sequence of steps and relatively simple, as in t
 
 All resource creation was done via **Cloudformation** and basically we have two stacks, one called _dataengineer-requirements_ where we create our codes bucket and our docker images repository and then the rest of all the necessary infrastructure for the pipeline called _dataengineer-stack_.
 
+<br />
+
+![CloudFormation](screenshots/cloudformation.png)
+
+<br />
+
 We've also created two **CICD pipelines**, one for creating resources whenever there's a PUSH on the master branch, and another for destroying resources that can be triggered manually.
 
 <br />
@@ -19,8 +25,6 @@ We've also created two **CICD pipelines**, one for creating resources whenever t
 ![cicd-construct](screenshots/cicd-construct.png)
 
 <br />
-
-![CloudFormation](screenshots/cloudformation.png)
 
 This set of buckets creates our datalake and the data goes through the complete ETL process involving all the main layers, here we call _data-rawzone, data-processingzone and data-deliveryzone_.
 
