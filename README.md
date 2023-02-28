@@ -12,6 +12,302 @@ First, the pipeline itself is a sequence of steps and relatively simple, as in t
 
 All resource creation was done via **Cloudformation** and basically we have two stacks, one called _dataengineer-requirements_ where we create our codes bucket and our docker images repository and then the rest of all the necessary infrastructure for the pipeline called _dataengineer-stack_.
 
+[requirements.yaml](cloudformation/requirements.yaml)
+
+```yaml
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Data Engineer Requirements
+
+Resources:
+
+  ## BUCKETS 
+  
+  CodesZone:
+    Type: AWS::S3::Bucket    
+    Properties:
+      BucketName: data-codeszone    
+      Tags:
+        - Key: DataBucket
+          Value: CodesZone
+
+  ## ECR REPOSITORY
+
+  ECRLambdaExtractImage: 
+    Type: AWS::ECR::Repository
+    Properties: 
+      RepositoryName: "lambda-extract-image"
+      ImageScanningConfiguration: 
+        ScanOnPush: true
+
+Outputs:
+
+  ## BUCKETS OUTPUT
+
+  CodesZoneBucketName:
+    Description: The CodesZone Bucket Name
+    Value: !Ref CodesZone
+
+  ## ECR REPOSITORY OUTPUT    
+
+  ECRLambdaExtractImageArn:
+    Value: !GetAtt ECRLambdaExtractImage.Arn
+```
+
+<br />
+
+[deploy.yaml](cloudformation/deploy.yaml)
+
+```yaml
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Data Engineer Stack
+
+Resources:
+
+  ## BUCKETS 
+
+  RawZone:
+    Type: AWS::S3::Bucket    
+    Properties:
+      BucketName: data-rawzone    
+      Tags:
+        - Key: DataBucket
+          Value: RawZone
+  
+  ProcessingZone:
+    Type: AWS::S3::Bucket    
+    Properties:
+      BucketName: data-processingzone    
+      Tags:
+        - Key: DataBucket
+          Value: ProcessingZone
+  
+  DeliveryZone:
+    Type: AWS::S3::Bucket    
+    Properties:
+      BucketName: data-deliveryzone    
+      Tags:
+        - Key: DataBucket
+          Value: DeliveryZone
+  
+  QueryResultsZone:
+    Type: AWS::S3::Bucket    
+    Properties:
+      BucketName: data-queryresultszone    
+      Tags:
+        - Key: DataBucket
+          Value: QueryResultsZone
+
+  ## GLUE RESOURCES
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: "deliverydatabase"
+
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: "deliverycrawler"
+      Role: Glue-S3
+      DatabaseName: !Ref GlueDatabase
+      RecrawlPolicy: 
+        RecrawlBehavior: CRAWL_EVERYTHING        
+      Targets:
+        S3Targets:
+          - Path: s3://data-deliveryzone
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG 
+      Configuration: "{\"Version\":1.0,\"Grouping\":{\"TableGroupingPolicy\":\"CombineCompatibleSchemas\"}}"    
+      Tags: {
+        DataCrawler: DeliveryCrawler
+      }
+
+  ## LAMBDA EXTRACT
+
+  LambdaExtract:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: lambda-extract
+      Code: 
+        ImageUri: <YOUR_ACCOUNT_ID>.dkr.ecr.<YOUR_REGION_NAME>.amazonaws.com/lambda-extract-image:latest            
+      Role: arn:aws:iam::<YOUR_ACCOUNT_ID>:role/LambdaExecutionRoleData
+      Timeout: 600
+      MemorySize: 450
+      PackageType: Image
+
+  ## GLUE SPARK JOBS      
+
+  GlueSparkJob1:
+    Type: AWS::Glue::Job
+    Properties:
+      Role: Glue-S3
+      Name: gluesparkjob1
+      Command:
+        Name: glueetl
+        ScriptLocation: "s3://data-codeszone/glue_job_1.py"
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      MaxRetries: 0
+      GlueVersion: 4.0
+
+  GlueSparkJob2:
+    Type: AWS::Glue::Job
+    Properties:
+      Role: Glue-S3
+      Name: gluesparkjob2
+      Command:
+        Name: glueetl
+        ScriptLocation: "s3://data-codeszone/glue_job_2.py"
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      MaxRetries: 0
+      GlueVersion: 4.0
+
+  ## GLUE WORKFLOW STRUCTURE
+
+  GlueWorkflow:
+    Type: AWS::Glue::Workflow
+    Properties: 
+      Name: glue-workflow
+      Description: Workflow for orchestrating the Glue Job
+
+  StartWorkflow:
+    Type: AWS::Glue::Trigger
+    Properties:
+      WorkflowName: !Ref GlueWorkflow
+      Name: start-workflow
+      Description: Start Workflow
+      Type: ON_DEMAND
+      Actions:
+        - JobName: !Ref GlueSparkJob1
+
+  WatchingGlueSparkJob1:
+    Type: AWS::Glue::Trigger
+    Properties:
+      WorkflowName: !Ref GlueWorkflow
+      Name: watching-glue-spark-job1
+      Description: Watching Glue Spark Job1
+      Type: CONDITIONAL
+      StartOnCreation: True
+      Actions:
+        - JobName: !Ref GlueSparkJob2
+      Predicate:
+        Conditions:
+          - LogicalOperator: EQUALS
+            JobName: !Ref GlueSparkJob1
+            State: SUCCEEDED
+
+  WatchingGlueSparkJob2:
+    Type: AWS::Glue::Trigger
+    Properties:
+      WorkflowName: !Ref GlueWorkflow
+      Name: watching-glue-spark-job2
+      Description: Watching Glue Spark Job2
+      Type: CONDITIONAL
+      StartOnCreation: True
+      Predicate:
+        Conditions:
+          - LogicalOperator: EQUALS
+            JobName: !Ref GlueSparkJob2
+            State: SUCCEEDED      
+      Actions:
+        - CrawlerName: !Ref GlueCrawler
+
+  ## STEP FUNCTION
+
+  WorkflowStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: Workflow-StateMachine
+      DefinitionString: |-
+        {
+          "Comment": "Workflow State Machine",
+          "StartAt": "lambda-extract",
+          "States": {
+            "lambda-extract": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "OutputPath": "$.Payload",
+              "Parameters": {
+                "Payload.$": "$",
+                "FunctionName": "arn:aws:lambda:<YOUR_REGION_NAME>:<YOUR_ACCOUNT_ID>:function:lambda-extract:$LATEST"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "Lambda.TooManyRequestsException"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 6,
+                  "BackoffRate": 2
+                }
+              ],
+              "Next": "glue-workflow"
+            },
+            "glue-workflow": {
+              "Type": "Task",
+              "End": true,
+              "Parameters": {
+                "Name": "glue-workflow"
+              },
+              "Resource": "arn:aws:states:::aws-sdk:glue:startWorkflowRun"
+            }
+          }
+        }
+      RoleArn: arn:aws:iam::<YOUR_ACCOUNT_ID>:role/service-role/StepFunctions-IngestionDatalakeStateMachine-role-a46669ee
+      Tags:
+        -
+          Key: "RunWorkflow"
+          Value: "TriggerLambda"
+        -
+          Key: "RunWorkflow"
+          Value: "TriggerGlueWorkflow"            
+          
+
+Outputs:
+
+  ## BUCKETS OUTPUT
+
+  RawZoneBucketName:
+    Description: The RawZone Bucket Name
+    Value: !Ref RawZone
+
+  ProcessingZoneBucketName:
+    Description: The ProcessingZone Bucket Name
+    Value: !Ref ProcessingZone
+
+  DeliveryZoneBucketName:
+    Description: The DeliveryZone Bucket Name
+    Value: !Ref DeliveryZone
+
+  QueryResultsZoneBucketName:
+    Description: The QueryResultsZone Bucket Name
+    Value: !Ref QueryResultsZone
+
+  ## GLUE RESOURCES OUTPUT
+
+  GlueDatabaseName:
+    Description: The Glue Database Name
+    Value: !Ref GlueDatabase
+    
+  GlueCrawlerName:
+    Description: The Glue Crawler Name
+    Value: !Ref GlueCrawler
+
+  ## LAMBDA EXTRACT OUTOUT    
+
+  LambdaExtractArn:
+    Value: !GetAtt LambdaExtract.Arn    
+
+```
+
+
 <br />
 
 ![CloudFormation](screenshots/cloudformation.png)
